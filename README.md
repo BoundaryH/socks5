@@ -58,13 +58,15 @@ defer conn.Close()
 * Design Logging API
 * Support UDP ASSOCIATE command
 * Support BIND command
+
+
 ## References
 
-[RFC 1928](https://tools.ietf.org/html/rfc1928)
-[RFC 1929](https://tools.ietf.org/html/rfc1929)
-[golang.org/x/net/internal/socks](https://github.com/golang/net/tree/master/internal/socks)
-[golang.org/x/net/internal/sockstest](https://github.com/golang/net/tree/master/internal/sockstest)
-[armon/go-socks5](https://github.com/armon/go-socks5)
+* [RFC 1928](https://tools.ietf.org/html/rfc1928)
+* [RFC 1929](https://tools.ietf.org/html/rfc1929)
+* [golang.org/x/net/internal/socks](https://github.com/golang/net/tree/master/internal/socks)
+* [golang.org/x/net/internal/sockstest](https://github.com/golang/net/tree/master/internal/sockstest)
+* [armon/go-socks5](https://github.com/armon/go-socks5)
 
 
 ## License
