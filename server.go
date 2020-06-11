@@ -9,21 +9,26 @@ import (
 
 // Server defines parameters for running an SOCKS5 server
 type Server struct {
-	Logger        func(error)
-	SelectMethod  func(ctx context.Context, methods []Method) Method
-	Authenticate  func(ctx context.Context, auth *Authentication) bool
-	HandleRequest func(ctx context.Context, req *Request) (Reply, *Address, io.ReadWriteCloser)
-	HandleProxy   func(ctx context.Context, conn io.ReadWriter, target io.ReadWriter) error
+	Log func(Method, *Authentication, *Request, error)
+
+	SelectMethod func(ctx context.Context, methods []Method) Method
+
+	// return true indicates success
+	// return false, handshake will be abort
+	Authenticate func(ctx context.Context, auth *Authentication) bool
+
+	// if err != nil, target should be nil
+	HandleRequest func(ctx context.Context, auth *Authentication, req *Request) (*Reply, io.ReadWriteCloser, error)
 }
 
 // ListenAndServe listens on the network address and then calls Serve
-func ListenAndServe(network, address string) error {
-	return NewServer().ListenAndServe(network, address)
+func ListenAndServe(address string) error {
+	return NewServer().ListenAndServe(address)
 }
 
 // ListenAndServeWithAuth listens on the network address and then calls Serve
-func ListenAndServeWithAuth(network, address string, userPW map[string]string) error {
-	return NewServerWithAuth(userPW).ListenAndServe(network, address)
+func ListenAndServeWithAuth(address, username, password string) error {
+	return NewServerWithAuth(username, password).ListenAndServe(address)
 }
 
 // Serve accepts incoming connections on the listener
@@ -45,19 +50,19 @@ func NewServer() *Server {
 }
 
 // NewServerWithAuth creates a new SOCKS5 proxy Server
-func NewServerWithAuth(userPW map[string]string) *Server {
+func NewServerWithAuth(username, password string) *Server {
 	return &Server{
-		SelectMethod: SelectMethodUsernamePassword,
+		SelectMethod: SelectMethodUserPass,
 		Authenticate: func(ctx context.Context, auth *Authentication) bool {
-			pw, ok := userPW[string(auth.Username)]
-			return ok && pw == string(auth.Password)
+			return auth != nil && string(auth.Username) == username &&
+				string(auth.Password) == password
 		},
 	}
 }
 
 // ListenAndServe listens on the network address and then calls Serve
-func (s *Server) ListenAndServe(network, address string) error {
-	l, err := net.Listen(network, address)
+func (s *Server) ListenAndServe(address string) error {
+	l, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
 	}
@@ -79,19 +84,19 @@ func (s *Server) Serve(l net.Listener) error {
 // ServeConn accepts a connection and handle SOCKS5 request
 func (s *Server) ServeConn(ctx context.Context, conn io.ReadWriteCloser) {
 	defer conn.Close()
-	err := s.handle(ctx, conn)
+	m, auth, req, err := s.handle(ctx, conn)
 	if err != nil {
-		if s.Logger != nil {
-			s.Logger(err)
+		if s.Log != nil {
+			s.Log(m, auth, req, err)
 		} else {
 			//log.Println(err)
 		}
 	}
 }
 
-func (s *Server) handle(ctx context.Context, conn io.ReadWriteCloser) (err error) {
+func (s *Server) handle(ctx context.Context, conn io.ReadWriteCloser) (
+	m Method, auth *Authentication, req *Request, err error) {
 	// Select method
-	var m Method
 	var methods []Method
 	methods, err = readMethods(conn)
 	if err != nil {
@@ -111,8 +116,7 @@ func (s *Server) handle(ctx context.Context, conn io.ReadWriteCloser) (err error
 	switch m {
 	case MethodNotRequired:
 	case MethodUsernamePassword:
-		var auth *Authentication
-		auth, err = readAuthentication(conn)
+		auth, err = readAuth(conn)
 		if err != nil {
 			return
 		}
@@ -124,40 +128,59 @@ func (s *Server) handle(ctx context.Context, conn io.ReadWriteCloser) (err error
 		if err != nil {
 			return
 		}
+		if !result {
+			err = ErrAuthFailed
+			return
+		}
 	default:
-		return fmt.Errorf("%w : %02x", ErrMethodNoAcceptable, m)
+		err = fmt.Errorf("%w : %02x", ErrMethodNoAcceptable, m)
+		return
 	}
 
 	// Handle request
-	var req *Request
-	var reply Reply
-	var bind *Address
+	var reply *Reply
 	var target io.ReadWriteCloser
 	req, err = readRequest(conn)
 	if err != nil {
 		return
 	}
 	if s.HandleRequest != nil {
-		reply, bind, target = s.HandleRequest(ctx, req)
+		reply, target, err = s.HandleRequest(ctx, auth, req)
 	} else {
-		reply, bind, target = HandleRequest(ctx, req)
+		reply, target, err = HandleRequest(ctx, auth, req)
 	}
-	err = sendReply(conn, reply, bind)
+	if err != nil {
+		if reply == nil {
+			reply, _ = newReply(ReplyFailure, "0.0.0.0:0")
+		}
+		if e := reply.send(conn); e != nil {
+			err = e
+			return
+		}
+		return
+	}
+	if target == nil {
+		err = fmt.Errorf("connection target is nil")
+		return
+	}
+	defer target.Close()
+
+	if reply == nil {
+		err = fmt.Errorf("reply is nil")
+		return
+	}
+	err = reply.send(conn)
 	if err != nil {
 		return
 	}
-	if reply != ReplySucceed {
-		return fmt.Errorf("Reply : %s", reply.String())
+	if reply.Code != ReplySucceed {
+		err = fmt.Errorf("Reply : %s", reply.Code.String())
+		return
 	}
 
 	// Start Proxy
-	defer target.Close()
-	if s.HandleProxy != nil {
-		err = s.HandleProxy(ctx, conn, target)
-	} else {
-		err = HandleProxy(ctx, conn, target)
-	}
-	return err
+	err = pipe(ctx, conn, target)
+	return
 }
 
 // SelectMethodNoRequired is the default value of Server.SelectMethod
@@ -170,8 +193,8 @@ func SelectMethodNoRequired(ctx context.Context, methods []Method) Method {
 	return MethodNoAcceptable
 }
 
-// SelectMethodUsernamePassword only support username/password method
-func SelectMethodUsernamePassword(ctx context.Context, methods []Method) Method {
+// SelectMethodUserPass only support username/password method
+func SelectMethodUserPass(ctx context.Context, methods []Method) Method {
 	for _, m := range methods {
 		if m == MethodUsernamePassword {
 			return m
@@ -181,55 +204,31 @@ func SelectMethodUsernamePassword(ctx context.Context, methods []Method) Method 
 }
 
 // HandleRequest is the default value of Server.HandleRequest
-func HandleRequest(ctx context.Context, req *Request) (
-	reply Reply, bind *Address, target io.ReadWriteCloser) {
-	reply = ReplyFailure
+func HandleRequest(ctx context.Context, auth *Authentication, req *Request) (
+	*Reply, io.ReadWriteCloser, error) {
 	switch req.Cmd {
 	case CmdConnect:
-		return handleConnect(req.Addr.String())
+		return handleConnect(req.Dst.String())
 	case CmdBind:
-		reply = ReplyCommandNotSupported
 	case CmdUDP:
-		reply = ReplyCommandNotSupported
 	default:
-		reply = ReplyCommandNotSupported
 	}
-	return
+	return nil, nil, ErrCmdUnsupported
 }
 
 func handleConnect(addr string) (
-	reply Reply, bind *Address, target io.ReadWriteCloser) {
-	conn, err := net.Dial("tcp", addr)
+	reply *Reply, target io.ReadWriteCloser, err error) {
+	var conn net.Conn
+	conn, err = net.Dial("tcp", addr)
 	if err != nil {
-		reply = ReplyHostUnreachable
+		reply, _ = newReply(getReplyCode(err.Error()), "0.0.0.0:0")
 		return
 	}
-	bind, err = NewAddress(conn.LocalAddr().String())
+	reply, err = newReply(ReplySucceed, conn.LocalAddr().String())
 	if err != nil {
-		reply = ReplyAddressNotSupported
+		conn.Close()
 		return
 	}
 	target = conn
-	return
-}
-
-// HandleProxy is the default value of Server.HandleProxy
-func HandleProxy(ctx context.Context,
-	conn io.ReadWriter, target io.ReadWriter) (err error) {
-	errCh := make(chan error, 2)
-	go func() {
-		_, e := io.Copy(conn, target)
-		errCh <- e
-	}()
-	go func() {
-		_, e := io.Copy(target, conn)
-		errCh <- e
-	}()
-
-	select {
-	case err = <-errCh:
-	case <-ctx.Done():
-		err = ctx.Err()
-	}
 	return
 }

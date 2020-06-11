@@ -14,13 +14,13 @@ Package socks5 provides SOCKS5 client and server implementations.
 
 Create a SOCKS5 proxy server 
 ```go
-socks5.ListenAndServe("tcp", "127.0.0.1:8888")
+socks5.ListenAndServe("127.0.0.1:1080")
 ```
 
 
 Create a SOCKS5 client and Dial
 ```go
-client, err := socks5.NewClient("127.0.0.1:8888")
+client, err := socks5.NewClient("127.0.0.1:1080")
 if err != nil {
     panic(err)
 }
@@ -34,14 +34,12 @@ defer conn.Close()
 
 Create a SOCKS5 proxy server with username/password
 ```go
-pw := make(map[string]string)
-pw["username"] = "password"
-socks5.ListenAndServeWithAuth("tcp", "127.0.0.1:8888", pw)
+socks5.ListenAndServeWithAuth("127.0.0.1:1080", "username", "password")
 ```
 
 Create a SOCKS5 client and Dial with username/password
 ```go
-client, err := socks5.NewClientWithAuth("127.0.0.1:8888", "username", "password")
+client, err := socks5.NewClientWithAuth("127.0.0.1:1080", "username", "password")
 if err != nil {
     panic(err)
 }

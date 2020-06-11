@@ -25,7 +25,7 @@ func NewClient(proxy string) (*Client, error) {
 // NewClientWithAuth returns a new Client with "username/password"
 // "no authentication require" is also enabled
 func NewClientWithAuth(proxy, username, password string) (*Client, error) {
-	auth, err := NewAuthentication(username, password)
+	auth, err := newAuth(username, password)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +39,7 @@ func NewClientWithAuth(proxy, username, password string) (*Client, error) {
 // Dial connects to the provided address via SOCKS5 proxy
 func (c *Client) Dial(network, address string) (conn net.Conn, err error) {
 	var req *Request
-	req, err = NewRequest(network, address)
+	req, err = newRequest(network, address)
 	if err != nil {
 		return
 	}
@@ -53,14 +53,13 @@ func (c *Client) Dial(network, address string) (conn net.Conn, err error) {
 		}
 	}()
 
-	_, err = Dial(conn, c.methods, c.auth, req)
+	err = Dial(conn, c.methods, c.auth, req)
 	return
 }
 
 // Dial connects to the provided address via SOCKS5 proxy
 func Dial(conn io.ReadWriter, methods []Method,
-	auth *Authentication, req *Request) (bind *Address, err error) {
-
+	auth *Authentication, req *Request) (err error) {
 	var method Method
 	err = sendMethods(conn, methods)
 	if err != nil {
@@ -78,7 +77,7 @@ func Dial(conn io.ReadWriter, methods []Method,
 			err = ErrInvalidAuth
 			return
 		}
-		err = sendAuthentication(conn, auth)
+		err = auth.send(conn)
 		if err != nil {
 			return
 		}
@@ -91,13 +90,17 @@ func Dial(conn io.ReadWriter, methods []Method,
 		return
 	}
 
-	err = sendRequest(conn, req)
+	err = req.send(conn)
 	if err != nil {
 		return
 	}
-	bind, err = readReply(conn)
+	var rep *Reply
+	rep, err = readReply(conn)
 	if err != nil {
 		return
 	}
-	return
+	if rep.Code != ReplySucceed {
+		return fmt.Errorf("%w : %s", ErrReplyFailure, rep.Code.String())
+	}
+	return nil
 }

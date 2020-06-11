@@ -13,30 +13,30 @@ func TestHandleRequest(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	req, err := NewRequest("tcp", l.Addr().String())
+	req, err := newRequest("tcp", l.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
-	reply, bind, _ := HandleRequest(ctx, req)
-	if reply != ReplySucceed || bind == nil {
+	reply, _, err := HandleRequest(ctx, nil, req)
+	if err != nil || reply.Code != ReplySucceed {
 		t.Fatal("Error")
 	}
 
-	req, err = NewRequest("tcp", "127.0.0.1:8")
+	req, err = newRequest("tcp", "127.0.0.1:8")
 	if err != nil {
 		t.Fatal(err)
 	}
-	reply, bind, _ = HandleRequest(ctx, req)
-	if reply == ReplySucceed || bind != nil {
+	reply, _, err = HandleRequest(ctx, nil, req)
+	if err == nil {
 		t.Fatal("Error")
 	}
 
-	req, err = NewRequest("udp", "127.0.0.1:8")
+	req, err = newRequest("udp", "127.0.0.1:8")
 	if err != nil {
 		t.Fatal(err)
 	}
-	reply, bind, _ = HandleRequest(ctx, req)
-	if reply != ReplyCommandNotSupported || bind != nil {
+	reply, _, err = HandleRequest(ctx, nil, req)
+	if err == nil {
 		t.Fatal("Error")
 	}
 }

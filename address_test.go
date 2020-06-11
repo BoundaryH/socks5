@@ -2,33 +2,64 @@ package socks5
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
 
 func TestAddr(t *testing.T) {
-	testAddr("hello.com:16", t)
-	testAddr("192.0.2.1:245", t)
-	testAddr("[2001:db8::68]:0", t)
-	if _, err := NewAddress(strings.Repeat("xx", 200) + ":88"); err == nil {
-		t.Fatal("Err")
+	t1 := []string{
+		"hello.com:16",
+		"192.0.2.1:245",
+		"[2001:db8::68]:0",
+	}
+	for _, i := range t1 {
+		if err := testAddr(i); err != nil {
+			fmt.Println(i)
+			t.Fatal(err)
+		}
+	}
+	t2 := []string{
+		"",
+		":",
+		":200",
+		"abc:",
+		"demo:87654",
+		strings.Repeat("xx", 200) + ":88",
+	}
+	for _, i := range t2 {
+		if _, err := NewAddress(i); err == nil {
+			fmt.Println(i)
+			t.Fatal("Error")
+		}
 	}
 }
 
-func testAddr(address string, t *testing.T) {
+func testAddr(address string) error {
+	var buf bytes.Buffer
 	a, err := NewAddress(address)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
-	b, err := a.ToByte()
+	if err := a.send(&buf); err != nil {
+		return err
+	}
+	b, err := readAddress(&buf)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
-	c, err := ReadAddress(bytes.NewBuffer(b))
-	if err != nil {
-		t.Fatal(err)
+	if !equal(a, b) {
+		return fmt.Errorf("%s != %s", a.String(), b.String())
 	}
-	if !a.Equal(c) {
-		t.Fatal("Err")
+	return nil
+}
+
+func equal(a *Address, b *Address) bool {
+	if a.Type != b.Type || a.Port != b.Port {
+		return false
 	}
+	if a.Type == AddrTypeDN {
+		return a.Domain == b.Domain
+	}
+	return a.IP.Equal(b.IP)
 }

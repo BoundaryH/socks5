@@ -53,8 +53,7 @@ func TestWithAuth(t *testing.T) {
 	target := l1.Addr().String()
 
 	// Server
-	pw := make(map[string]string)
-	s := NewServerWithAuth(pw)
+	s := NewServerWithAuth("user", "password")
 	l2, err := net.Listen("tcp", "127.0.0.1:")
 	if err != nil {
 		t.Fatal(err)
@@ -67,12 +66,6 @@ func TestWithAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.Dial("tcp", target); err != ErrAuthFailed {
-		t.Fatal(err)
-	}
-
-	// add user/password
-	pw["user"] = "password"
 	if _, err := c.Dial("tcp", target); err != nil {
 		t.Fatal(err)
 	}

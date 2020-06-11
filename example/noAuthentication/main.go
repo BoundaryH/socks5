@@ -26,5 +26,5 @@ func main() {
 }
 
 func server() {
-	log.Fatal(socks5.ListenAndServe("tcp", "127.0.0.1:8888"))
+	log.Fatal(socks5.ListenAndServe("127.0.0.1:8888"))
 }

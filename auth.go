@@ -1,13 +1,13 @@
 package socks5
 
 import (
-	"bytes"
 	"errors"
+	"fmt"
 	"io"
 )
 
 // AuthStatus represents authentication status
-type AuthStatus uint8
+type AuthStatus byte
 
 // Various constants
 const (
@@ -18,6 +18,7 @@ const (
 var (
 	// ErrInvalidAuth represents auth is nil or username/password is too long
 	ErrInvalidAuth = errors.New("invalid authentication")
+
 	// ErrAuthFailed represents username/password are not correct
 	ErrAuthFailed = errors.New("username/password authentication failed")
 )
@@ -25,13 +26,14 @@ var (
 // Authentication is the credentials
 // for the username/password authentication method.
 type Authentication struct {
+	Ver      byte
 	Username []byte
 	Password []byte
 }
 
-// NewAuthentication return the Authentication
-func NewAuthentication(username, password string) (*Authentication, error) {
+func newAuth(username, password string) (*Authentication, error) {
 	a := &Authentication{
+		Ver:      Version5,
 		Username: []byte(username),
 		Password: []byte(password),
 	}
@@ -41,8 +43,15 @@ func NewAuthentication(username, password string) (*Authentication, error) {
 	return a, nil
 }
 
-// ReadAuth return the Authentication which read from reader
-func ReadAuth(r io.Reader) (*Authentication, error) {
+func readAuth(r io.Reader) (*Authentication, error) {
+	ver, err := readSingleByte(r)
+	if err != nil {
+		return nil, err
+	}
+	if ver != Version5 {
+		return nil, fmt.Errorf("%w : %02x", ErrInvalidVersion, ver)
+	}
+
 	uLen, err := readSingleByte(r)
 	if err != nil {
 		return nil, err
@@ -61,28 +70,45 @@ func ReadAuth(r io.Reader) (*Authentication, error) {
 		return nil, err
 	}
 	return &Authentication{
+		Ver:      ver,
 		Username: username,
 		Password: password,
 	}, nil
 }
 
-// ToByte return a slice of byte
-// which is the format of SOCKS5 protocol
-func (a *Authentication) ToByte() ([]byte, error) {
+func (a *Authentication) send(w io.Writer) (err error) {
 	if len(a.Username) > 255 || len(a.Password) > 255 {
-		return nil, ErrInvalidAuth
+		return ErrInvalidAuth
 	}
-	var buf bytes.Buffer
-	buf.Grow(2 + len(a.Username) + len(a.Password))
-	buf.WriteByte(byte(len(a.Username)))
-	buf.Write(a.Username)
-	buf.WriteByte(byte(len(a.Password)))
-	buf.Write(a.Password)
-	return buf.Bytes(), nil
+	buf := make([]byte, 2, 3+len(a.Username)+len(a.Password))
+	buf[0] = a.Ver
+	buf[1] = byte(len(a.Username))
+	buf = append(buf, a.Username...)
+	buf = append(buf, byte(len(a.Password)))
+	buf = append(buf, a.Password...)
+	_, err = w.Write(buf)
+	return
 }
 
-// Verify the password
-func (a *Authentication) Verify(user, pw string) bool {
-	return bytes.Equal(a.Username, []byte(user)) &&
-		bytes.Equal(a.Password, []byte(pw))
+func sendAuthStatus(w io.Writer, success bool) (err error) {
+	if success {
+		_, err = w.Write([]byte{Version5, byte(AuthSuccess)})
+	} else {
+		_, err = w.Write([]byte{Version5, byte(AuthFailure)})
+	}
+	return
+}
+
+func readAuthStatus(r io.Reader) (err error) {
+	buf := []byte{0, 0}
+	if _, err := io.ReadFull(r, buf); err != nil {
+		return err
+	}
+	if buf[0] != Version5 {
+		return fmt.Errorf("%w : %02x", ErrInvalidVersion, buf[0])
+	}
+	if AuthStatus(buf[1]) != AuthSuccess {
+		return ErrAuthFailed
+	}
+	return nil
 }

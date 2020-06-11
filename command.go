@@ -1,9 +1,12 @@
 package socks5
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Command represents SOCKS5 Command
-type Command uint8
+type Command byte
 
 // Various const
 const (
@@ -11,6 +14,9 @@ const (
 	CmdBind    Command = 0x02
 	CmdUDP     Command = 0x03
 )
+
+// ErrCmdUnsupported represents the command unsupported
+var ErrCmdUnsupported = errors.New("command unsupported")
 
 func getCommand(network string) (Command, error) {
 	switch network {

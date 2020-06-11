@@ -26,7 +26,5 @@ func main() {
 }
 
 func server() {
-	pw := make(map[string]string)
-	pw["username"] = "password"
-	log.Fatal(socks5.ListenAndServeWithAuth("tcp", "127.0.0.1:8888", pw))
+	log.Fatal(socks5.ListenAndServeWithAuth("127.0.0.1:8888", "username", "password"))
 }
