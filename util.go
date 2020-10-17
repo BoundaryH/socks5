@@ -11,7 +11,7 @@ func readSingleByte(r io.Reader) (byte, error) {
 	return b[0], err
 }
 
-func pipe(ctx context.Context,
+func Pipe(ctx context.Context,
 	conn io.ReadWriter, target io.ReadWriter) (err error) {
 	errCh := make(chan error, 2)
 	go func() {

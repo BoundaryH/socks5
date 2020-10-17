@@ -19,7 +19,9 @@ func TestNoAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go s.Serve(l2)
+	go func() {
+		t.Fatal(s.Serve(l2))
+	}()
 	proxy := l2.Addr().String()
 
 	// Client
@@ -58,7 +60,9 @@ func TestWithAuth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go s.Serve(l2)
+	go func() {
+		t.Fatal(s.Serve(l2))
+	}()
 	proxy := l2.Addr().String()
 
 	// Client

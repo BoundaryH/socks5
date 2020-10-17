@@ -7,10 +7,29 @@ import (
 	"net"
 )
 
+// Stage respresent stage of handle process
+type Stage int
+
+// Define Stage value
+const (
+	StageSelectMethod Stage = iota
+	StageAuth
+	StageHandleRequest
+	StageReply
+)
+
+// Event defines process values of connection
+type Event struct {
+	Stage  Stage
+	Method Method
+	Auth   *Authentication
+	Req    *Request
+	Reply  *Reply
+	Target io.ReadWriteCloser
+}
+
 // Server defines parameters for running an SOCKS5 server
 type Server struct {
-	Log func(Method, *Authentication, *Request, error)
-
 	SelectMethod func(ctx context.Context, methods []Method) Method
 
 	// return true indicates success
@@ -19,29 +38,6 @@ type Server struct {
 
 	// if err != nil, target should be nil
 	HandleRequest func(ctx context.Context, auth *Authentication, req *Request) (*Reply, io.ReadWriteCloser, error)
-}
-
-// ListenAndServe listens on the network address and then calls Serve
-func ListenAndServe(address string) error {
-	return NewServer().ListenAndServe(address)
-}
-
-// ListenAndServeWithAuth listens on the network address and then calls Serve
-func ListenAndServeWithAuth(address, username, password string) error {
-	return NewServerWithAuth(username, password).ListenAndServe(address)
-}
-
-// Serve accepts incoming connections on the listener
-// and creating a new service goroutine for each.
-func Serve(l net.Listener) error {
-	var s Server
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			return err
-		}
-		go s.ServeConn(context.Background(), conn)
-	}
 }
 
 // NewServer creates a new SOCKS5 proxy Server
@@ -57,6 +53,14 @@ func NewServerWithAuth(username, password string) *Server {
 			return auth != nil && string(auth.Username) == username &&
 				string(auth.Password) == password
 		},
+	}
+}
+
+// NewHandShaker creates a new SOCKS5 Server only for handshake
+func NewHandShaker() *Server {
+	return &Server{
+		SelectMethod:  SelectMethodNoRequired,
+		HandleRequest: HandleRequestSkip,
 	}
 }
 
@@ -77,52 +81,73 @@ func (s *Server) Serve(l net.Listener) error {
 		if err != nil {
 			return err
 		}
-		go s.ServeConn(context.Background(), conn)
+		go func() {
+			s.ServeConn(context.Background(), conn)
+			//log.Println(err)
+		}()
 	}
 }
 
 // ServeConn accepts a connection and handle SOCKS5 request
-func (s *Server) ServeConn(ctx context.Context, conn io.ReadWriteCloser) {
+func (s *Server) ServeConn(ctx context.Context, conn io.ReadWriteCloser) error {
 	defer conn.Close()
-	m, auth, req, err := s.handle(ctx, conn)
+	event, err := s.Handshake(ctx, conn)
 	if err != nil {
-		if s.Log != nil {
-			s.Log(m, auth, req, err)
-		} else {
-			//log.Println(err)
-		}
+		return err
 	}
+	// Start Proxy
+	if event.Target != nil {
+		defer event.Target.Close()
+		return Pipe(ctx, conn, event.Target)
+	}
+	return nil
 }
 
-func (s *Server) handle(ctx context.Context, conn io.ReadWriteCloser) (
-	m Method, auth *Authentication, req *Request, err error) {
+// Handshake accepts a connection and handle SOCKS5 handshake
+func (s *Server) Handshake(ctx context.Context, conn io.ReadWriter) (event Event, err error) {
+	isDone := func() bool {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+			return true
+		default:
+			// skip
+		}
+		return false
+	}
+
 	// Select method
+	event.Stage = StageSelectMethod
 	var methods []Method
 	methods, err = readMethods(conn)
 	if err != nil {
 		return
 	}
 	if s.SelectMethod != nil {
-		m = s.SelectMethod(ctx, methods)
+		event.Method = s.SelectMethod(ctx, methods)
 	} else {
-		m = SelectMethodNoRequired(ctx, methods)
+		event.Method = SelectMethodNoRequired(ctx, methods)
 	}
-	err = sendMethodSelection(conn, m)
+	err = sendMethodSelection(conn, event.Method)
 	if err != nil {
+		return
+	}
+	if isDone() {
 		return
 	}
 
 	// Authenticate
-	switch m {
+	event.Stage = StageAuth
+	switch event.Method {
 	case MethodNotRequired:
 	case MethodUsernamePassword:
-		auth, err = readAuth(conn)
+		event.Auth, err = readAuth(conn)
 		if err != nil {
 			return
 		}
 		result := false
 		if s.Authenticate != nil {
-			result = s.Authenticate(ctx, auth)
+			result = s.Authenticate(ctx, event.Auth)
 		}
 		err = sendAuthStatus(conn, result)
 		if err != nil {
@@ -133,53 +158,53 @@ func (s *Server) handle(ctx context.Context, conn io.ReadWriteCloser) (
 			return
 		}
 	default:
-		err = fmt.Errorf("%w : %02x", ErrMethodNoAcceptable, m)
+		err = fmt.Errorf("%w : %02x", ErrMethodNoAcceptable, event.Method)
+		return
+	}
+	if isDone() {
 		return
 	}
 
 	// Handle request
-	var reply *Reply
-	var target io.ReadWriteCloser
-	req, err = readRequest(conn)
+	event.Stage = StageHandleRequest
+	event.Req, err = readRequest(conn)
 	if err != nil {
 		return
 	}
 	if s.HandleRequest != nil {
-		reply, target, err = s.HandleRequest(ctx, auth, req)
+		event.Reply, event.Target, err = s.HandleRequest(ctx, event.Auth, event.Req)
 	} else {
-		reply, target, err = HandleRequest(ctx, auth, req)
+		event.Reply, event.Target, err = HandleRequest(ctx, event.Auth, event.Req)
 	}
-	if err != nil {
-		if reply == nil {
-			reply, _ = newReply(ReplyFailure, "0.0.0.0:0")
-		}
-		if e := reply.send(conn); e != nil {
-			err = e
-			return
-		}
+	if isDone() {
 		return
 	}
-	if target == nil {
-		err = fmt.Errorf("connection target is nil")
-		return
-	}
-	defer target.Close()
 
-	if reply == nil {
+	// Reply
+	event.Stage = StageReply
+	if err != nil {
+		if event.Reply == nil {
+			event.Reply, _ = newReply(ReplyFailure, "0.0.0.0:0")
+		}
+		event.Reply.send(conn)
+		return
+	}
+
+	if event.Reply == nil {
 		err = fmt.Errorf("reply is nil")
 		return
 	}
-	err = reply.send(conn)
+	err = event.Reply.send(conn)
 	if err != nil {
 		return
 	}
-	if reply.Code != ReplySucceed {
-		err = fmt.Errorf("Reply : %s", reply.Code.String())
+	if event.Reply.Code != ReplySucceed {
+		err = fmt.Errorf("Reply : %s", event.Reply.Code.String())
 		return
 	}
-
-	// Start Proxy
-	err = pipe(ctx, conn, target)
+	if isDone() {
+		return
+	}
 	return
 }
 
@@ -201,6 +226,13 @@ func SelectMethodUserPass(ctx context.Context, methods []Method) Method {
 		}
 	}
 	return MethodNoAcceptable
+}
+
+// HandleRequestSkip skip handle request and return a reply
+func HandleRequestSkip(ctx context.Context, auth *Authentication, req *Request) (
+	*Reply, io.ReadWriteCloser, error) {
+	reply, err := newReply(ReplySucceed, "0.0.0.0:0")
+	return reply, nil, err
 }
 
 // HandleRequest is the default value of Server.HandleRequest

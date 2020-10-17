@@ -156,12 +156,21 @@ func (a *Address) send(w io.Writer) error {
 
 func (a *Address) String() string {
 	switch a.Type {
-	case AddrTypeIPv4:
+	case AddrTypeIPv4, AddrTypeIPv6:
 		return fmt.Sprintf("%s:%d", a.IP.String(), a.Port)
 	case AddrTypeDN:
 		return fmt.Sprintf("%s:%d", a.Domain, a.Port)
-	case AddrTypeIPv6:
-		return fmt.Sprintf("%s:%d", a.IP.String(), a.Port)
+	}
+	return ""
+}
+
+// Host return the host string
+func (a *Address) Host() string {
+	switch a.Type {
+	case AddrTypeIPv4, AddrTypeIPv6:
+		return a.IP.String()
+	case AddrTypeDN:
+		return a.Domain
 	}
 	return ""
 }
